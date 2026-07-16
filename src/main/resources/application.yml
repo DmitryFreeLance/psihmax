@@ -1,0 +1,25 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: psihmax-bot
+
+bot:
+  data-file: ${BOT_DATA_FILE:data/orders.json}
+  max:
+    token: ${MAX_BOT_TOKEN:}
+    api-base-url: ${MAX_API_BASE_URL:https://platform-api2.max.ru}
+    admin-user-id: ${MAX_ADMIN_USER_ID:0}
+  yookassa:
+    shop-id: ${YOOKASSA_SHOP_ID:}
+    secret-key: ${YOOKASSA_SECRET_KEY:}
+    return-url: ${YOOKASSA_RETURN_URL:https://max.ru}
+  links:
+    book-url: ${BOOK_URL:https://ozon.ru/t/IF6xtqF}
+    vk-url: ${VK_URL:https://vk.com/oksana_praktik}
+    telegram-url: ${TELEGRAM_URL:https://t.me/oksana_praktik}
+
+logging:
+  level:
+    ru.psihmax.bot: INFO
