@@ -7,6 +7,7 @@ spring:
 
 bot:
   data-file: ${BOT_DATA_FILE:data/orders.json}
+  reviews-dir: ${REVIEWS_DIR:otzivi}
   max:
     token: ${MAX_BOT_TOKEN:}
     api-base-url: ${MAX_API_BASE_URL:https://platform-api2.max.ru}

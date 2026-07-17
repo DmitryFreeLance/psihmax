@@ -30,14 +30,16 @@ public class BotService {
     private final YooKassaClient yooKassaClient;
     private final OrderStore orderStore;
     private final AdminStore adminStore;
+    private final ReviewService reviewService;
     private final BotProperties properties;
     private final Map<Long, UserState> states = new ConcurrentHashMap<>();
 
-    public BotService(MaxApiClient maxApiClient, YooKassaClient yooKassaClient, OrderStore orderStore, AdminStore adminStore, BotProperties properties) {
+    public BotService(MaxApiClient maxApiClient, YooKassaClient yooKassaClient, OrderStore orderStore, AdminStore adminStore, ReviewService reviewService, BotProperties properties) {
         this.maxApiClient = maxApiClient;
         this.yooKassaClient = yooKassaClient;
         this.orderStore = orderStore;
         this.adminStore = adminStore;
+        this.reviewService = reviewService;
         this.properties = properties;
     }
 
@@ -188,6 +190,14 @@ public class BotService {
             ));
             return;
         }
+        if ("REVIEWS".equals(payload)) {
+            sendReviewPage(incoming, 0);
+            return;
+        }
+        if (payload.startsWith("REVIEWS:")) {
+            sendReviewPage(incoming, parsePage(payload.substring("REVIEWS:".length())));
+            return;
+        }
         if ("ADMIN_MENU".equals(payload)) {
             sendAdminMenu(incoming);
             return;
@@ -274,6 +284,28 @@ public class BotService {
         ));
     }
 
+    private void sendReviewPage(Incoming incoming, int page) {
+        reviewService.getPage(page).ifPresentOrElse(review -> {
+            int current = review.page() + 1;
+            int previous = Math.max(0, review.page() - 1);
+            int next = Math.min(review.total() - 1, review.page() + 1);
+
+            List<List<InlineButton>> buttons = rows(
+                    List.of(
+                            InlineButton.callback("⬅️ Назад", "REVIEWS:" + previous),
+                            InlineButton.callback(current + "/" + review.total(), "REVIEWS:" + review.page()),
+                            InlineButton.callback("Вперёд ➡️", "REVIEWS:" + next)
+                    ),
+                    List.of(InlineButton.callback("💳 Тарифы", "TARIFFS"), InlineButton.callback("🏠 Меню", "MAIN"))
+            );
+            sendImageTo(incoming, "💬 *Отзывы*\nФото " + current + " из " + review.total(), review.token(), buttons);
+        }, () -> sendTo(incoming, """
+                💬 Отзывы пока не найдены.
+
+                Проверьте, что папка `otzivi` существует и в ней есть фото.
+                """, mainMenu()));
+    }
+
     private void sendAdminMenu(Incoming incoming) {
         if (!adminStore.isAdmin(incoming.userId())) {
             sendTo(incoming, "Команда `/admin` доступна только администраторам.", mainMenu());
@@ -330,6 +362,14 @@ public class BotService {
         }
     }
 
+    private void sendImageTo(Incoming incoming, String text, String imageToken, List<List<InlineButton>> buttons) {
+        if (incoming.chatId() != null) {
+            maxApiClient.sendImageToChat(incoming.chatId(), text, imageToken, buttons);
+        } else {
+            maxApiClient.sendImageToUser(incoming.userId(), text, imageToken, buttons);
+        }
+    }
+
     private void sendToUser(long userId, String text, List<List<InlineButton>> buttons) {
         maxApiClient.sendMessageToUser(userId, text, buttons);
     }
@@ -337,7 +377,7 @@ public class BotService {
     private List<List<InlineButton>> mainMenu() {
         return rows(
                 List.of(InlineButton.callback("🌌 О практике", "ABOUT"), InlineButton.callback("✨ Курс", "COURSE")),
-                List.of(InlineButton.callback("💳 Тарифы и оплата", "TARIFFS")),
+                List.of(InlineButton.callback("💬 Отзывы", "REVIEWS"), InlineButton.callback("💳 Тарифы", "TARIFFS")),
                 List.of(InlineButton.callback("🌀 Личная сессия", "SESSION_INFO")),
                 List.of(InlineButton.callback("⚠️ Правила", "RULES"), InlineButton.callback("🔗 Ссылки", "LINKS"))
         );
@@ -357,6 +397,14 @@ public class BotService {
 
     private static String buyPayload(Tariff tariff) {
         return "BUY:" + tariff.code();
+    }
+
+    private int parsePage(String value) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     private String startText() {

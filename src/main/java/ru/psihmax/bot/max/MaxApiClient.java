@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -11,9 +12,12 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import org.springframework.stereotype.Component;
 import ru.psihmax.bot.config.BotProperties;
 
@@ -60,6 +64,44 @@ public class MaxApiClient {
         sendMessage("chat_id", chatId, text, buttons);
     }
 
+    public void sendImageToUser(long userId, String text, String imageToken, List<List<InlineButton>> buttons) {
+        sendImage("user_id", userId, text, imageToken, buttons);
+    }
+
+    public void sendImageToChat(long chatId, String text, String imageToken, List<List<InlineButton>> buttons) {
+        sendImage("chat_id", chatId, text, imageToken, buttons);
+    }
+
+    public String uploadImage(Path image) {
+        try {
+            HttpRequest prepareRequest = HttpRequest.newBuilder()
+                    .uri(uri("/uploads?type=image"))
+                    .timeout(Duration.ofSeconds(30))
+                    .header("Authorization", properties.max().token())
+                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .build();
+
+            JsonNode uploadInfo = objectMapper.readTree(send(prepareRequest).body());
+            String uploadUrl = uploadInfo.path("url").asText();
+            String token = uploadInfo.path("token").asText();
+            if (uploadUrl.isBlank()) {
+                throw new IOException("MAX upload response has no url: " + uploadInfo);
+            }
+
+            HttpResponse<String> uploadResponse = uploadFile(uploadUrl, image);
+            JsonNode uploadResult = tryReadJson(uploadResponse.body());
+            if (token.isBlank() && uploadResult != null) {
+                token = firstText(uploadResult.path("token"), uploadResult.path("retval").path("token")).orElse("");
+            }
+            if (token.isBlank()) {
+                throw new IOException("MAX upload response has no token. Prepare: " + uploadInfo + ", upload: " + uploadResponse.body());
+            }
+            return token;
+        } catch (Exception e) {
+            throw new IllegalStateException("Cannot upload image " + image, e);
+        }
+    }
+
     public void answerCallback(String callbackId, String notification) {
         try {
             ObjectNode body = objectMapper.createObjectNode();
@@ -78,14 +120,34 @@ public class MaxApiClient {
     }
 
     private void sendMessage(String idName, long id, String text, List<List<InlineButton>> buttons) {
+        sendMessage(idName, id, text, null, buttons);
+    }
+
+    private void sendImage(String idName, long id, String text, String imageToken, List<List<InlineButton>> buttons) {
+        ObjectNode image = objectMapper.createObjectNode();
+        image.put("type", "image");
+        ObjectNode payload = objectMapper.createObjectNode();
+        payload.put("token", imageToken);
+        image.set("payload", payload);
+        sendMessage(idName, id, text, List.of(image), buttons);
+    }
+
+    private void sendMessage(String idName, long id, String text, List<ObjectNode> extraAttachments, List<List<InlineButton>> buttons) {
         try {
             ObjectNode body = objectMapper.createObjectNode();
             body.put("text", text);
             body.put("format", "markdown");
             body.put("notify", true);
 
+            ArrayNode attachments = objectMapper.createArrayNode();
+            if (extraAttachments != null) {
+                extraAttachments.forEach(attachments::add);
+            }
             if (buttons != null && !buttons.isEmpty()) {
-                body.set("attachments", inlineKeyboard(buttons));
+                attachments.add(inlineKeyboard(buttons));
+            }
+            if (!attachments.isEmpty()) {
+                body.set("attachments", attachments);
             }
 
             HttpRequest request = HttpRequest.newBuilder()
@@ -101,8 +163,7 @@ public class MaxApiClient {
         }
     }
 
-    private ArrayNode inlineKeyboard(List<List<InlineButton>> rows) {
-        ArrayNode attachments = objectMapper.createArrayNode();
+    private ObjectNode inlineKeyboard(List<List<InlineButton>> rows) {
         ObjectNode attachment = objectMapper.createObjectNode();
         attachment.put("type", "inline_keyboard");
         ObjectNode payload = objectMapper.createObjectNode();
@@ -127,8 +188,51 @@ public class MaxApiClient {
 
         payload.set("buttons", buttons);
         attachment.set("payload", payload);
-        attachments.add(attachment);
-        return attachments;
+        return attachment;
+    }
+
+    private HttpResponse<String> uploadFile(String uploadUrl, Path image) throws IOException, InterruptedException {
+        String boundary = "----psihmax-" + UUID.randomUUID();
+        String contentType = Files.probeContentType(image);
+        if (contentType == null || contentType.isBlank()) {
+            contentType = "application/octet-stream";
+        }
+
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        body.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
+        body.write(("Content-Disposition: form-data; name=\"data\"; filename=\"" + image.getFileName() + "\"\r\n").getBytes(StandardCharsets.UTF_8));
+        body.write(("Content-Type: " + contentType + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+        body.write(Files.readAllBytes(image));
+        body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+
+        HttpRequest uploadRequest = HttpRequest.newBuilder()
+                .uri(URI.create(uploadUrl))
+                .timeout(Duration.ofMinutes(3))
+                .header("Authorization", properties.max().token())
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray()))
+                .build();
+        return send(uploadRequest);
+    }
+
+    private JsonNode tryReadJson(String body) {
+        try {
+            if (body == null || body.isBlank()) {
+                return null;
+            }
+            return objectMapper.readTree(body);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private java.util.Optional<String> firstText(JsonNode... nodes) {
+        for (JsonNode node : nodes) {
+            if (node != null && !node.isMissingNode() && !node.isNull() && !node.asText("").isBlank()) {
+                return java.util.Optional.of(node.asText());
+            }
+        }
+        return java.util.Optional.empty();
     }
 
     private HttpResponse<String> send(HttpRequest request) throws IOException, InterruptedException {

@@ -7,6 +7,7 @@ RUN mvn -q -DskipTests package
 
 FROM eclipse-temurin:21-jre
 WORKDIR /app
+RUN mkdir -p /app/otzivi /app/data
 
 # MAX platform-api2 can use Russian Trusted CA certificates. Import both
 # certificates from the official Gosuslugi CDN into the JVM truststore.
@@ -24,6 +25,7 @@ RUN set -eux; \
     rm -rf /tmp/russian-ca
 
 COPY --from=build /workspace/target/psihmax-bot-*.jar /app/app.jar
+COPY otzivi /app/otzivi
 
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

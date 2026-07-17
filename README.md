@@ -10,6 +10,7 @@ Java 21 + Spring Boot бот для MAX: long polling, inline-кнопки, YooK
 - Создаёт платеж YooKassa и отправляет пользователю ссылку на оплату.
 - При webhook `payment.succeeded` проверяет платеж через YooKassa API, благодарит пользователя и уведомляет администратора.
 - Команда `/admin` позволяет текущему администратору добавить нового администратора кнопкой из пользователей, которые уже писали боту.
+- Кнопка «Отзывы» показывает все фото из папки `otzivi`, которая лежит в проекте, с пагинацией и кешем загруженных в MAX изображений.
 - Заказы хранит в JSON-файле, поэтому повторный webhook не отправит повторное уведомление.
 - Dockerfile импортирует сертификаты Минцифры `Russian Trusted Root CA` и `Russian Trusted Sub CA` в JVM truststore.
 
@@ -27,6 +28,7 @@ cp .env.example .env
 - `MAX_ADMIN_USER_ID` — MAX user id администратора, которому отправлять уведомления.
 - `YOOKASSA_SHOP_ID` и `YOOKASSA_SECRET_KEY` — данные магазина YooKassa.
 - `YOOKASSA_RETURN_URL` — куда ЮKassa вернёт пользователя после оплаты.
+- `REVIEWS_DIR` — папка с фото отзывов внутри контейнера, по умолчанию `/app/otzivi` для Docker-запуска ниже.
 
 Webhook в кабинете YooKassa:
 
@@ -48,7 +50,7 @@ docker build -t psihmax-bot .
 docker run -d \
   --name psihmax-bot \
   --restart unless-stopped \
-  -p 8080:8080 \
+  -p 127.0.0.1:8082:8080 \
   -e SERVER_PORT=8080 \
   -e MAX_BOT_TOKEN='<ТОКЕН_MAX_БОТА>' \
   -e MAX_API_BASE_URL='https://platform-api2.max.ru' \
@@ -60,6 +62,7 @@ docker run -d \
   -e VK_URL='https://vk.com/oksana_praktik' \
   -e TELEGRAM_URL='https://t.me/oksana_praktik' \
   -e BOT_DATA_FILE='/app/data/orders.json' \
+  -e REVIEWS_DIR='/app/otzivi' \
   -v psihmax-data:/app/data \
   psihmax-bot
 ```
