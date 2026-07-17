@@ -2,6 +2,7 @@ package ru.psihmax.bot.max;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.MissingNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.ByteArrayOutputStream;
@@ -91,7 +92,11 @@ public class MaxApiClient {
             HttpResponse<String> uploadResponse = uploadFile(uploadUrl, image);
             JsonNode uploadResult = tryReadJson(uploadResponse.body());
             if (token.isBlank() && uploadResult != null) {
-                token = firstText(uploadResult.path("token"), uploadResult.path("retval").path("token")).orElse("");
+                token = firstText(
+                        uploadResult.path("token"),
+                        uploadResult.path("retval").path("token"),
+                        firstPhotoToken(uploadResult)
+                ).orElse("");
             }
             if (token.isBlank()) {
                 throw new IOException("MAX upload response has no token. Prepare: " + uploadInfo + ", upload: " + uploadResponse.body());
@@ -117,6 +122,20 @@ public class MaxApiClient {
         } catch (Exception ignored) {
             // Callback notifications are best effort; the real navigation is sent as a new message.
         }
+    }
+
+    private JsonNode firstPhotoToken(JsonNode uploadResult) {
+        JsonNode photos = uploadResult.path("photos");
+        if (photos.isObject()) {
+            var fields = photos.fields();
+            while (fields.hasNext()) {
+                JsonNode token = fields.next().getValue().path("token");
+                if (!token.isMissingNode() && !token.isNull() && !token.asText("").isBlank()) {
+                    return token;
+                }
+            }
+        }
+        return MissingNode.getInstance();
     }
 
     private void sendMessage(String idName, long id, String text, List<List<InlineButton>> buttons) {
@@ -175,7 +194,7 @@ public class MaxApiClient {
                 ObjectNode buttonNode = objectMapper.createObjectNode();
                 buttonNode.put("type", button.type());
                 buttonNode.put("text", button.text());
-                if (button.payload() != null) {
+                if (button.payload() != null && !"message".equals(button.type())) {
                     buttonNode.put("payload", button.payload());
                 }
                 if (button.url() != null) {

@@ -1,11 +1,11 @@
 # MAX-бот Оксаны Ремпе
 
-Java 21 + Spring Boot бот для MAX: long polling, inline-кнопки, YooKassa-платежи и webhook `payment.succeeded`.
+Java 21 + Spring Boot бот для MAX: long polling, inline-кнопки типа `message`, YooKassa-платежи и webhook `payment.succeeded`.
 
 ## Что умеет
 
 - Работает через long polling MAX API на `https://platform-api2.max.ru`.
-- Все навигационные кнопки сделаны inline callback-кнопками, внешние ссылки открываются URL-кнопками.
+- Все навигационные кнопки сделаны inline-кнопками типа `message`, внешние ссылки открываются URL-кнопками.
 - Перед оплатой бот запрашивает имя и телефон.
 - Создаёт платеж YooKassa и отправляет пользователю ссылку на оплату.
 - При webhook `payment.succeeded` проверяет платеж через YooKassa API, благодарит пользователя и уведомляет администратора.

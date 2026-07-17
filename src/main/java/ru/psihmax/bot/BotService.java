@@ -52,9 +52,6 @@ public class BotService {
         adminStore.rememberUser(incoming.userId(), incoming.userDisplayName());
 
         try {
-            if (incoming.callbackId() != null) {
-                maxApiClient.answerCallback(incoming.callbackId(), "Готово");
-            }
             if (incoming.payload() != null && !incoming.payload().isBlank()) {
                 handlePayload(incoming);
                 return;
@@ -114,23 +111,31 @@ public class BotService {
             return;
         }
 
+        String buttonPayload = payloadFromButtonText(text);
+        if (buttonPayload != null) {
+            handlePayload(new Incoming(incoming.userId(), incoming.chatId(), incoming.text(), incoming.callbackId(), buttonPayload, incoming.userDisplayName()));
+            return;
+        }
+
         if (state != null && state.step() == Step.WAITING_NAME) {
             if (text.length() < 2) {
-                sendTo(incoming, "Напишите, пожалуйста, имя чуть подробнее.", backToTariffs());
+                sendTo(incoming, "Напишите, пожалуйста, имя чуть подробнее — обычным сообщением в этот чат.", backToTariffs());
                 return;
             }
             states.put(incoming.userId(), state.withName(text));
             sendTo(incoming, """
-                    Спасибо, %s.
+                    *Шаг 2 из 2*
 
-                    Теперь отправьте номер телефона для связи. Можно в любом удобном формате.
+                    Спасибо, %s. Теперь отправьте *номер телефона* для связи.
+
+                    Можно в любом удобном формате, например: `+7 999 123-45-67`.
                     """.formatted(text), backToTariffs());
             return;
         }
 
         if (state != null && state.step() == Step.WAITING_PHONE) {
             if (text.length() < 6) {
-                sendTo(incoming, "Похоже, номер слишком короткий. Отправьте телефон ещё раз.", backToTariffs());
+                sendTo(incoming, "Похоже, номер слишком короткий. Отправьте телефон ещё раз обычным сообщением.", backToTariffs());
                 return;
             }
             createPayment(incoming, state.withPhone(text));
@@ -150,7 +155,7 @@ public class BotService {
         if ("ABOUT".equals(payload)) {
             sendTo(incoming, aboutText(), rows(
                     List.of(InlineButton.callback("✨ Курс", "COURSE"), InlineButton.callback("💳 Тарифы", "TARIFFS")),
-                    List.of(InlineButton.callback("🔗 Ссылки", "LINKS"), InlineButton.callback("🏠 Главное меню", "MAIN"))
+                    List.of(InlineButton.callback("📞 Связь", "CONTACTS"), InlineButton.callback("🏠 Главное меню", "MAIN"))
             ));
             return;
         }
@@ -182,9 +187,8 @@ public class BotService {
             ));
             return;
         }
-        if ("LINKS".equals(payload)) {
-            sendTo(incoming, "Полезные ссылки Оксаны:", rows(
-                    List.of(InlineButton.link("📘 Заказать книгу", properties.links().bookUrl())),
+        if ("CONTACTS".equals(payload) || "LINKS".equals(payload)) {
+            sendTo(incoming, contactsText(), rows(
                     List.of(InlineButton.link("💙 VK", properties.links().vkUrl()), InlineButton.link("✈️ Telegram", properties.links().telegramUrl())),
                     List.of(InlineButton.callback("↩️ Назад", "MAIN"))
             ));
@@ -220,10 +224,14 @@ public class BotService {
     private void startPaymentDialog(Incoming incoming, Tariff tariff) {
         states.put(incoming.userId(), new UserState(Step.WAITING_NAME, tariff, null, null));
         sendTo(incoming, """
+                *Шаг 1 из 2*
+
                 Вы выбрали: *%s*
                 Стоимость: *%s*
 
-                Перед оплатой напишите, пожалуйста, ваше имя.
+                Чтобы я сформировала ссылку на оплату, ответьте обычным сообщением в этот чат:
+
+                *Как вас зовут?*
                 """.formatted(tariff.title(), tariff.amountText()), backToTariffs());
     }
 
@@ -257,12 +265,12 @@ public class BotService {
         states.remove(incoming.userId());
 
         sendTo(incoming, """
-                Готово, %s. Ссылка на оплату сформирована.
+                %s, я сформировала ссылку на оплату.
 
                 Тариф: *%s*
                 Сумма: *%s*
 
-                После успешной оплаты бот получит вебхук от ЮKassa, поблагодарит вас и отправит уведомление админу.
+                После оплаты я увижу подтверждение от ЮKassa, поблагодарю вас и отправлю уведомление администратору.
                 """.formatted(state.name(), state.tariff().title(), state.tariff().amountText()), rows(
                 List.of(InlineButton.link("💳 Оплатить", payment.confirmationUrl())),
                 List.of(InlineButton.callback("💎 Выбрать другой тариф", "TARIFFS")),
@@ -292,9 +300,9 @@ public class BotService {
 
             List<List<InlineButton>> buttons = rows(
                     List.of(
-                            InlineButton.callback("⬅️ Назад", "REVIEWS:" + previous),
+                            InlineButton.callback("⬅️ " + (previous + 1) + "/" + review.total(), "REVIEWS:" + previous),
                             InlineButton.callback(current + "/" + review.total(), "REVIEWS:" + review.page()),
-                            InlineButton.callback("Вперёд ➡️", "REVIEWS:" + next)
+                            InlineButton.callback((next + 1) + "/" + review.total() + " ➡️", "REVIEWS:" + next)
                     ),
                     List.of(InlineButton.callback("💳 Тарифы", "TARIFFS"), InlineButton.callback("🏠 Меню", "MAIN"))
             );
@@ -321,7 +329,7 @@ public class BotService {
         List<List<InlineButton>> buttons = new ArrayList<>();
         users.stream().limit(30).forEach(user -> {
             String marker = adminStore.isAdmin(user.userId()) ? " ✅" : "";
-            buttons.add(List.of(InlineButton.callback("👤 " + shortLabel(user.displayName(), user.userId()) + marker, "ADMIN_ADD:" + user.userId())));
+            buttons.add(List.of(InlineButton.callback("👤 " + shortLabel(user.displayName(), user.userId()) + " (" + user.userId() + ")" + marker, "ADMIN_ADD:" + user.userId())));
         });
         buttons.add(List.of(InlineButton.callback("🏠 Главное меню", "MAIN")));
 
@@ -348,7 +356,7 @@ public class BotService {
                     List.of(InlineButton.callback("🛠 Назад к админам", "ADMIN_MENU")),
                     List.of(InlineButton.callback("🏠 Главное меню", "MAIN"))
             ));
-            sendToUser(userId, "✅ Вам выдали права администратора в боте Оксаны Ремпе.", mainMenu());
+            sendToUser(userId, "✅ Я выдала вам права администратора в моём боте.", mainMenu());
         } catch (NumberFormatException e) {
             sendAdminMenu(incoming);
         }
@@ -376,10 +384,11 @@ public class BotService {
 
     private List<List<InlineButton>> mainMenu() {
         return rows(
-                List.of(InlineButton.callback("🌌 О практике", "ABOUT"), InlineButton.callback("✨ Курс", "COURSE")),
+                List.of(InlineButton.callback("🌌 Обо мне", "ABOUT"), InlineButton.callback("✨ Курс", "COURSE")),
                 List.of(InlineButton.callback("💬 Отзывы", "REVIEWS"), InlineButton.callback("💳 Тарифы", "TARIFFS")),
                 List.of(InlineButton.callback("🌀 Личная сессия", "SESSION_INFO")),
-                List.of(InlineButton.callback("⚠️ Правила", "RULES"), InlineButton.callback("🔗 Ссылки", "LINKS"))
+                List.of(InlineButton.link("📘 Заказать книгу", properties.links().bookUrl())),
+                List.of(InlineButton.callback("⚠️ Правила", "RULES"), InlineButton.callback("📞 Связь", "CONTACTS"))
         );
     }
 
@@ -399,6 +408,44 @@ public class BotService {
         return "BUY:" + tariff.code();
     }
 
+    private String payloadFromButtonText(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+
+        return switch (text.trim()) {
+            case "🏠 Главное меню", "🏠 Меню", "🏠 Меню бота", "↩️ Назад" -> "MAIN";
+            case "🌌 Обо мне", "🌌 О практике" -> "ABOUT";
+            case "✨ Курс", "↩️ Назад к курсу" -> "COURSE";
+            case "💳 Тарифы", "💳 Тарифы и оплата", "💳 Все тарифы", "💳 К тарифам",
+                    "💳 Выбрать формат", "💳 Выбрать оплату", "💎 Выбрать другой тариф" -> "TARIFFS";
+            case "🌀 Личная сессия" -> "SESSION_INFO";
+            case "⚠️ Правила", "⚠️ Правила пространства" -> "RULES";
+            case "📞 Связь", "🔗 Ссылки" -> "CONTACTS";
+            case "💬 Отзывы" -> "REVIEWS";
+            case "🔥 Полный курс 35 000 ₽" -> buyPayload(Tariff.FULL);
+            case "💸 Неделя 3 500 ₽" -> buyPayload(Tariff.WEEKLY);
+            case "🌀 Личная сессия 15 000 ₽", "🌀 Записаться на сессию" -> buyPayload(Tariff.SESSION);
+            case "🔁 Повторное обучение 1 000 ₽" -> buyPayload(Tariff.REPEAT);
+            case "🛠 Назад к админам" -> "ADMIN_MENU";
+            default -> payloadFromDynamicButtonText(text.trim());
+        };
+    }
+
+    private String payloadFromDynamicButtonText(String text) {
+        if (text.matches(".*\\d+/\\d+.*")) {
+            String pageText = text.replaceAll("^.*?(\\d+)/(\\d+).*$", "$1");
+            return "REVIEWS:" + Math.max(0, parsePage(pageText) - 1);
+        }
+        if (text.startsWith("👤 ")) {
+            java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\((\\d+)\\)").matcher(text);
+            if (matcher.find()) {
+                return "ADMIN_ADD:" + matcher.group(1);
+            }
+        }
+        return null;
+    }
+
     private int parsePage(String value) {
         try {
             return Integer.parseInt(value);
@@ -409,24 +456,24 @@ public class BotService {
 
     private String startText() {
         return """
-                Оксана Ремпе
-                *Кармический психолог, регрессолог, гипнолог, мастер Рейки.*
+                *Оксана Ремпе*
+                Кармический психолог, регрессолог, гипнолог, мастер Рейки.
 
                 Видящая. Чувствующая. Знающая.
 
-                Но это всё просто иллюзия. На самом деле я То, что это Осознаёт.
+                Но это всё просто иллюзия. На самом деле я — *То, что это Осознаёт*.
 
-                Здесь можно узнать о курсе «Познай себя. Пробуждение», выбрать формат участия, оплатить обучение или записаться на личную сессию.
+                Здесь я собрала всё главное: *курс «Познай себя. Пробуждение»*, личную сессию, тарифы, отзывы и связь со мной.
                 """;
     }
 
     private String aboutText() {
         return """
-                🌌 *Оксана Ремпе*
+                🌌 *Обо мне*
 
-                Практика Оксаны о возвращении к себе: к честности, глубине, внутреннему знанию и живому контакту с тем, кто вы есть на самом деле.
+                Я веду через возвращение к себе: к честности, глубине, внутреннему знанию и живому контакту с тем, кто вы есть на самом деле.
 
-                Регрессология, гипноз, Рейки, тетахилинг и аксесс-бары здесь не как ярлыки, а как инструменты для мягкого, точного погружения.
+                Регрессология, гипноз, Рейки, тетахилинг и аксесс-бары для меня не ярлыки, а *инструменты мягкого и точного погружения*.
                 """;
     }
 
@@ -434,11 +481,13 @@ public class BotService {
         return """
                 ✨ *Курс «Познай себя. Пробуждение»*
 
-                Для тех, кто устал искать истину снаружи и готов идти в себя. Для тех, кто хочет выйти из состояния жертвы обстоятельств и стать автором своей реальности.
+                Я создала этот курс для тех, кто устал искать истину снаружи и готов идти в себя.
 
-                Обучение длится 13 недель: вы оплачиваете 12 недель, а 13-я неделя идёт в подарок.
+                Это путь из состояния «жертвы обстоятельств» к состоянию *творца своей реальности*.
 
-                Это путь к осознаванию: не объяснить словами, а прожить самому.
+                Обучение длится *13 недель*: вы оплачиваете 12 недель, а 13-я неделя идёт в подарок.
+
+                Пробуждение нельзя объяснить словами. Его можно только прожить самому.
                 """;
     }
 
@@ -447,13 +496,13 @@ public class BotService {
                 💳 *Выберите формат участия*
 
                 🔥 *Полный курс* — 35 000 ₽
-                Максимальная выгода: вся программа целиком, без еженедельных оплат.
+                Вся программа целиком. Вы закрываете финансовый вопрос один раз и спокойно идёте в обучение.
 
                 💸 *Понедельная оплата* — 3 500 ₽
-                Оплата каждую пятницу до 21:00. Занятия по субботам в 9:00 по Москве.
+                Мягкий вход в курс. Оплата каждую пятницу до *21:00*. Занятия по субботам в *9:00 по Москве*.
 
                 🌀 *Индивидуальная сессия* — 15 000 ₽
-                Личная консультация и глубокая работа с причиной повторяющегося сценария.
+                Личная работа со мной и глубокий поиск причины повторяющегося сценария.
 
                 🔁 *Повторное обучение* — 1 000 ₽
                 Для тех, кто уже проходил обучение.
@@ -466,9 +515,9 @@ public class BotService {
 
                 «Один сеанс, который разделит вашу жизнь на до и после».
 
-                Если вы снова попадаете в одинаковые отношения, упираетесь в финансовый потолок или годами ходите по кругу вокруг одной проблемы, мы ищем не поверхность, а корень.
+                Если вы снова попадаете в одинаковые отношения, упираетесь в финансовый потолок или годами ходите вокруг одной проблемы, я не остаюсь на поверхности.
 
-                За 2 часа спускаемся к первопричине в подсознании и развязываем узел. Это не магия, а глубокая психологическая работа с памятью и состоянием.
+                За 2 часа мы спускаемся к первопричине в подсознании и развязываем узел. Это не магия, а *глубокая психологическая работа* с памятью и состоянием.
 
                 Стоимость: *15 000 ₽*
                 """;
@@ -478,11 +527,19 @@ public class BotService {
         return """
                 ⚠️ *Правила пространства*
 
-                Участие подтверждается после фактического зачисления средств. Скриншоты и обещания в личные сообщения не принимаются: всё прозрачно и проходит через банк.
+                Я подтверждаю участие после фактического зачисления средств. Скриншоты и обещания в личные сообщения не принимаются: всё прозрачно и проходит через банк.
 
-                Для еженедельного формата оплата следующей недели вносится до пятницы, 21:00.
+                Для еженедельного формата оплата следующей недели вносится до пятницы, *21:00*.
 
                 Если оплата не поступает вовремя, участие в следующей неделе не подтверждается. Пробуждение начинается с дисциплины и взаимного уважения.
+                """;
+    }
+
+    private String contactsText() {
+        return """
+                📞 *Связь со мной*
+
+                Здесь можно написать мне напрямую или подписаться на мои материалы.
                 """;
     }
 
@@ -502,12 +559,12 @@ public class BotService {
         Long userId = firstLong(
                 update.path("user").path("user_id"),
                 update.path("user").path("id"),
+                callback.path("user").path("user_id"),
+                callback.path("user").path("id"),
                 message.path("sender").path("user_id"),
                 message.path("sender").path("id"),
                 message.path("author").path("user_id"),
                 message.path("author").path("id"),
-                callback.path("user").path("user_id"),
-                callback.path("user").path("id"),
                 update.path("sender").path("user_id"),
                 update.path("sender").path("id")
         ).orElse(null);
@@ -538,10 +595,10 @@ public class BotService {
         String displayName = firstText(
                 update.path("user").path("name"),
                 update.path("user").path("username"),
-                message.path("sender").path("name"),
-                message.path("sender").path("username"),
                 callback.path("user").path("name"),
-                callback.path("user").path("username")
+                callback.path("user").path("username"),
+                message.path("sender").path("name"),
+                message.path("sender").path("username")
         ).orElse("");
 
         if ("bot_started".equals(updateType) && payload == null) {
