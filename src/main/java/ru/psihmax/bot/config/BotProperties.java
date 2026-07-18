@@ -11,6 +11,7 @@ public record BotProperties(
         String dataFile,
         String reviewsDir,
         String videosDir,
+        String timeZone,
         @Valid Max max,
         @Valid YooKassa yookassa,
         @Valid Links links

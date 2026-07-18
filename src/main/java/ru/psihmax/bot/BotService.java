@@ -2,6 +2,9 @@ package ru.psihmax.bot;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -18,28 +21,39 @@ import ru.psihmax.bot.payment.PaymentRequest;
 import ru.psihmax.bot.payment.Tariff;
 import ru.psihmax.bot.payment.YooKassaClient;
 import ru.psihmax.bot.store.AdminStore;
+import ru.psihmax.bot.store.LinkTarget;
 import ru.psihmax.bot.store.OrderStore;
 import ru.psihmax.bot.store.PaymentOrder;
+import ru.psihmax.bot.store.ScheduledLink;
+import ru.psihmax.bot.store.ScheduledLinkStore;
 import ru.psihmax.bot.store.UserProfile;
 
 @Service
 public class BotService {
     private static final Logger log = LoggerFactory.getLogger(BotService.class);
+    private static final DateTimeFormatter ADMIN_DATE_TIME = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
 
     private final MaxApiClient maxApiClient;
     private final YooKassaClient yooKassaClient;
     private final OrderStore orderStore;
     private final AdminStore adminStore;
     private final ReviewService reviewService;
+    private final ScheduledLinkStore scheduledLinkStore;
+    private final LinkDeliveryService linkDeliveryService;
     private final BotProperties properties;
     private final Map<Long, UserState> states = new ConcurrentHashMap<>();
+    private final Map<Long, AdminLinkDraft> adminLinkDrafts = new ConcurrentHashMap<>();
 
-    public BotService(MaxApiClient maxApiClient, YooKassaClient yooKassaClient, OrderStore orderStore, AdminStore adminStore, ReviewService reviewService, BotProperties properties) {
+    public BotService(MaxApiClient maxApiClient, YooKassaClient yooKassaClient, OrderStore orderStore, AdminStore adminStore,
+                      ReviewService reviewService, ScheduledLinkStore scheduledLinkStore, LinkDeliveryService linkDeliveryService,
+                      BotProperties properties) {
         this.maxApiClient = maxApiClient;
         this.yooKassaClient = yooKassaClient;
         this.orderStore = orderStore;
         this.adminStore = adminStore;
         this.reviewService = reviewService;
+        this.scheduledLinkStore = scheduledLinkStore;
+        this.linkDeliveryService = linkDeliveryService;
         this.properties = properties;
     }
 
@@ -59,7 +73,7 @@ public class BotService {
             handleText(incoming);
         } catch (Exception e) {
             log.warn("Cannot handle update {}", update, e);
-            sendTo(incoming, "Не получилось выполнить действие. Попробуйте ещё раз или вернитесь в меню.", mainMenu());
+            sendTo(incoming, "Не получилось выполнить действие. Попробуйте ещё раз или вернитесь в меню.", mainMenu(incoming.userId()));
         }
     }
 
@@ -70,7 +84,7 @@ public class BotService {
                 Спасибо, %s. Вы оплатили: *%s*.
 
                 Я свяжусь с вами, если нужно согласовать детали.
-                """.formatted(order.customerName(), order.tariffTitle()), mainMenu());
+                """.formatted(order.customerName(), order.tariffTitle()), mainMenu(order.userId()));
 
         for (Long adminId : adminStore.adminIds()) {
             sendToUser(adminId, """
@@ -95,6 +109,7 @@ public class BotService {
                             order.paymentId()
                     ), List.of(List.of(InlineButton.callback("🏠 Меню бота", "MAIN"))));
         }
+        linkDeliveryService.processDueLinksForUser(order.userId());
     }
 
     private void handleText(Incoming incoming) {
@@ -103,19 +118,27 @@ public class BotService {
 
         if ("/start".equalsIgnoreCase(text) || "start".equalsIgnoreCase(text)) {
             states.remove(incoming.userId());
+            adminLinkDrafts.remove(incoming.userId());
             sendStart(incoming);
             return;
         }
 
         if ("/admin".equalsIgnoreCase(text)) {
             states.remove(incoming.userId());
-            sendAdminMenu(incoming);
+            adminLinkDrafts.remove(incoming.userId());
+            sendAdminPanel(incoming);
             return;
         }
 
         String buttonPayload = payloadFromButtonText(text);
         if (buttonPayload != null) {
             handlePayload(new Incoming(incoming.userId(), incoming.chatId(), incoming.text(), incoming.callbackId(), buttonPayload, incoming.userDisplayName()));
+            return;
+        }
+
+        AdminLinkDraft draft = adminLinkDrafts.get(incoming.userId());
+        if (draft != null) {
+            handleAdminLinkText(incoming, draft, text);
             return;
         }
 
@@ -169,7 +192,7 @@ public class BotService {
             return;
         }
 
-        sendTo(incoming, "Я рядом и отвечаю через кнопки ниже. Выберите нужный раздел.", mainMenu());
+        sendTo(incoming, "Я рядом и отвечаю через кнопки ниже. Выберите нужный раздел.", mainMenu(incoming.userId()));
     }
 
     private void handlePayload(Incoming incoming) {
@@ -245,6 +268,26 @@ public class BotService {
             sendAdminMenu(incoming);
             return;
         }
+        if ("ADMIN_PANEL".equals(payload)) {
+            sendAdminPanel(incoming);
+            return;
+        }
+        if ("LINK_ADD_COURSE".equals(payload)) {
+            startLinkDraft(incoming, LinkTarget.COURSE);
+            return;
+        }
+        if ("LINK_ADD_SESSION".equals(payload)) {
+            startLinkDraft(incoming, LinkTarget.SESSION);
+            return;
+        }
+        if ("LINK_LIST".equals(payload)) {
+            sendScheduledLinks(incoming);
+            return;
+        }
+        if (payload.startsWith("LINK_CANCEL:")) {
+            cancelScheduledLink(incoming, payload.substring("LINK_CANCEL:".length()));
+            return;
+        }
         if (payload.startsWith("ADMIN_ADD:")) {
             addAdminByPayload(incoming, payload);
             return;
@@ -318,7 +361,7 @@ public class BotService {
     }
 
     private void sendStart(Incoming incoming) {
-        sendTo(incoming, startText(), mainMenu());
+        sendTo(incoming, startText(), mainMenu(incoming.userId()));
     }
 
     private void sendTariffs(Incoming incoming) {
@@ -375,7 +418,7 @@ public class BotService {
                 🖼 Фото отзывы пока не найдены.
 
                 Проверьте, что папка `otzivi` существует и в ней есть фото.
-                """, mainMenu()));
+                """, mainMenu(incoming.userId())));
     }
 
     private void sendVideoReviewPage(Incoming incoming, int page) {
@@ -398,18 +441,18 @@ public class BotService {
                 🎬 Видео отзывы пока не найдены.
 
                 Проверьте, что в папке `videos` есть файлы `1.mp4`, `2.mp4`, `3.mp4`.
-                """, mainMenu()));
+                """, mainMenu(incoming.userId())));
     }
 
     private void sendAdminMenu(Incoming incoming) {
         if (!adminStore.isAdmin(incoming.userId())) {
-            sendTo(incoming, "Команда `/admin` доступна только администраторам.", mainMenu());
+            sendTo(incoming, "Команда `/admin` доступна только администраторам.", mainMenu(incoming.userId()));
             return;
         }
 
         List<UserProfile> users = adminStore.knownUsers();
         if (users.isEmpty()) {
-            sendTo(incoming, "Пока нет пользователей, которых можно добавить в админы.", mainMenu());
+            sendTo(incoming, "Пока нет пользователей, которых можно добавить в админы.", mainMenu(incoming.userId()));
             return;
         }
 
@@ -429,7 +472,7 @@ public class BotService {
 
     private void addAdminByPayload(Incoming incoming, String payload) {
         if (!adminStore.isAdmin(incoming.userId())) {
-            sendTo(incoming, "Команда доступна только администраторам.", mainMenu());
+            sendTo(incoming, "Команда доступна только администраторам.", mainMenu(incoming.userId()));
             return;
         }
 
@@ -443,9 +486,147 @@ public class BotService {
                     List.of(InlineButton.callback("🛠 Назад к админам", "ADMIN_MENU")),
                     List.of(InlineButton.callback("🏠 Главное меню", "MAIN"))
             ));
-            sendToUser(userId, "✅ Я выдала вам права администратора в моём боте.", mainMenu());
+            sendToUser(userId, "✅ Я выдала вам права администратора в моём боте.", mainMenu(userId));
         } catch (NumberFormatException e) {
             sendAdminMenu(incoming);
+        }
+    }
+
+    private void sendAdminPanel(Incoming incoming) {
+        if (!adminStore.isAdmin(incoming.userId())) {
+            sendTo(incoming, "Админ-панель доступна только администраторам.", mainMenu(incoming.userId()));
+            return;
+        }
+        sendTo(incoming, """
+                🛠 *Админ-панель*
+
+                Здесь можно управлять администраторами и расписанием ссылок для оплативших клиентов.
+                """, rows(
+                List.of(InlineButton.callback("➕ Ссылка курса", "LINK_ADD_COURSE")),
+                List.of(InlineButton.callback("➕ Ссылка личной сессии", "LINK_ADD_SESSION")),
+                List.of(InlineButton.callback("📋 Запланированные ссылки", "LINK_LIST")),
+                List.of(InlineButton.callback("👥 Добавить админа", "ADMIN_MENU")),
+                List.of(InlineButton.callback("🏠 Главное меню", "MAIN"))
+        ));
+    }
+
+    private void startLinkDraft(Incoming incoming, LinkTarget target) {
+        if (!adminStore.isAdmin(incoming.userId())) {
+            sendTo(incoming, "Это действие доступно только администраторам.", mainMenu(incoming.userId()));
+            return;
+        }
+        adminLinkDrafts.put(incoming.userId(), new AdminLinkDraft(target, AdminLinkStep.WAITING_URL, null));
+        String audience = target == LinkTarget.COURSE
+                ? "полный курс + оплаченная понедельная/повторная неделя"
+                : "оплаченные личные сессии";
+        sendTo(incoming, """
+                🔗 *Новая ссылка*
+
+                Аудитория: *%s*
+
+                Отправьте саму ссылку обычным сообщением.
+                """.formatted(audience), adminBackButtons());
+    }
+
+    private void handleAdminLinkText(Incoming incoming, AdminLinkDraft draft, String text) {
+        if (!adminStore.isAdmin(incoming.userId())) {
+            adminLinkDrafts.remove(incoming.userId());
+            sendTo(incoming, "Это действие доступно только администраторам.", mainMenu(incoming.userId()));
+            return;
+        }
+
+        if (draft.step() == AdminLinkStep.WAITING_URL) {
+            if (!isUrl(text)) {
+                sendTo(incoming, "Ссылка выглядит некорректно. Отправьте URL, который начинается с `http://` или `https://`.", adminBackButtons());
+                return;
+            }
+            adminLinkDrafts.put(incoming.userId(), new AdminLinkDraft(draft.target(), AdminLinkStep.WAITING_DATE_TIME, text));
+            sendTo(incoming, """
+                    🕘 Теперь отправьте дату и время, когда ссылка должна прийти.
+
+                    Формат: `дд.мм.гггг чч:мм`
+                    Пример: `25.07.2026 09:00`
+
+                    Часовой пояс: *%s*
+                    """.formatted(properties.timeZone()), adminBackButtons());
+            return;
+        }
+
+        if (draft.step() == AdminLinkStep.WAITING_DATE_TIME) {
+            Optional<Instant> sendAt = parseAdminDateTime(text);
+            if (sendAt.isEmpty()) {
+                sendTo(incoming, "Не смог распознать дату. Используйте формат `дд.мм.гггг чч:мм`, например `25.07.2026 09:00`.", adminBackButtons());
+                return;
+            }
+            String title = draft.target() == LinkTarget.COURSE
+                    ? "Материал для обучения"
+                    : "Ссылка для личной сессии";
+            ScheduledLink link = scheduledLinkStore.create(draft.target(), title, draft.url(), sendAt.get().toString());
+            adminLinkDrafts.remove(incoming.userId());
+            linkDeliveryService.processDueLinks();
+            sendTo(incoming, """
+                    ✅ Ссылка сохранена
+
+                    Тип: *%s*
+                    Отправка: *%s*
+                    URL: %s
+                    ID: `%s`
+                    """.formatted(linkTargetText(link.target()), formatAdminDateTime(link.sendAt()), link.url(), shortId(link.id())), rows(
+                    List.of(InlineButton.callback("📋 Запланированные ссылки", "LINK_LIST")),
+                    List.of(InlineButton.callback("🛠 Админ-панель", "ADMIN_PANEL")),
+                    List.of(InlineButton.callback("🏠 Главное меню", "MAIN"))
+            ));
+        }
+    }
+
+    private void sendScheduledLinks(Incoming incoming) {
+        if (!adminStore.isAdmin(incoming.userId())) {
+            sendTo(incoming, "Это действие доступно только администраторам.", mainMenu(incoming.userId()));
+            return;
+        }
+
+        List<ScheduledLink> links = scheduledLinkStore.activeLinks();
+        if (links.isEmpty()) {
+            sendTo(incoming, "Пока нет активных запланированных ссылок.", adminBackButtons());
+            return;
+        }
+
+        StringBuilder text = new StringBuilder("📋 *Запланированные ссылки*\n\n");
+        List<List<InlineButton>> buttons = new ArrayList<>();
+        links.stream().limit(12).forEach(link -> {
+            String id = shortId(link.id());
+            text.append("`").append(id).append("` ")
+                    .append(linkTargetText(link.target()))
+                    .append("\n")
+                    .append(formatAdminDateTime(link.sendAt()))
+                    .append("\n")
+                    .append(link.url())
+                    .append("\n\n");
+            buttons.add(List.of(InlineButton.callback("🗑 Удалить " + id, "LINK_CANCEL:" + id)));
+        });
+        buttons.add(List.of(InlineButton.callback("➕ Ссылка курса", "LINK_ADD_COURSE")));
+        buttons.add(List.of(InlineButton.callback("➕ Ссылка личной сессии", "LINK_ADD_SESSION")));
+        buttons.add(List.of(InlineButton.callback("🛠 Админ-панель", "ADMIN_PANEL")));
+        buttons.add(List.of(InlineButton.callback("🏠 Главное меню", "MAIN")));
+        sendTo(incoming, text.toString(), buttons);
+    }
+
+    private void cancelScheduledLink(Incoming incoming, String idOrPrefix) {
+        if (!adminStore.isAdmin(incoming.userId())) {
+            sendTo(incoming, "Это действие доступно только администраторам.", mainMenu(incoming.userId()));
+            return;
+        }
+        Optional<ScheduledLink> link = scheduledLinkStore.activeLinks().stream()
+                .filter(item -> item.id().startsWith(idOrPrefix))
+                .findFirst();
+        if (link.isPresent() && scheduledLinkStore.cancel(link.get().id())) {
+            sendTo(incoming, "🗑 Ссылка `" + shortId(link.get().id()) + "` удалена из расписания.", rows(
+                    List.of(InlineButton.callback("📋 Запланированные ссылки", "LINK_LIST")),
+                    List.of(InlineButton.callback("🛠 Админ-панель", "ADMIN_PANEL")),
+                    List.of(InlineButton.callback("🏠 Главное меню", "MAIN"))
+            ));
+        } else {
+            sendTo(incoming, "Не нашла активную ссылку с таким ID.", adminBackButtons());
         }
     }
 
@@ -485,13 +666,24 @@ public class BotService {
         maxApiClient.sendMessageToUser(userId, text, buttons);
     }
 
-    private List<List<InlineButton>> mainMenu() {
-        return rows(
+    private List<List<InlineButton>> mainMenu(Long userId) {
+        List<List<InlineButton>> buttons = new ArrayList<>(List.of(
                 List.of(InlineButton.callback("🌌 Обо мне", "ABOUT"), InlineButton.callback("✨ Курс", "COURSE")),
                 List.of(InlineButton.callback("💬 Отзывы", "REVIEWS"), InlineButton.callback("💳 Тарифы", "TARIFFS")),
                 List.of(InlineButton.callback("🌀 Личная сессия", "SESSION_INFO")),
                 List.of(InlineButton.link("📘 Заказать книгу", properties.links().bookUrl())),
                 List.of(InlineButton.callback("⚠️ Правила", "RULES"), InlineButton.callback("📞 Связь", "CONTACTS"))
+        ));
+        if (userId != null && adminStore.isAdmin(userId)) {
+            buttons.add(List.of(InlineButton.callback("🛠 Админ-панель", "ADMIN_PANEL")));
+        }
+        return buttons;
+    }
+
+    private List<List<InlineButton>> adminBackButtons() {
+        return rows(
+                List.of(InlineButton.callback("🛠 Админ-панель", "ADMIN_PANEL")),
+                List.of(InlineButton.callback("🏠 Главное меню", "MAIN"))
         );
     }
 
@@ -533,6 +725,10 @@ public class BotService {
             case "🌀 Личная сессия 15 000 ₽", "🌀 Записаться на сессию" -> buyPayload(Tariff.SESSION);
             case "🔁 Повторное обучение 1 000 ₽", "🔁 Повторное обучение 1 000 ₽/нед." -> buyPayload(Tariff.REPEAT);
             case "🛠 Назад к админам" -> "ADMIN_MENU";
+            case "🛠 Админ-панель" -> "ADMIN_PANEL";
+            case "➕ Ссылка курса" -> "LINK_ADD_COURSE";
+            case "➕ Ссылка личной сессии" -> "LINK_ADD_SESSION";
+            case "📋 Запланированные ссылки" -> "LINK_LIST";
             default -> payloadFromDynamicButtonText(text.trim());
         };
     }
@@ -548,6 +744,9 @@ public class BotService {
             if (matcher.find()) {
                 return "ADMIN_ADD:" + matcher.group(1);
             }
+        }
+        if (text.startsWith("🗑 Удалить ")) {
+            return "LINK_CANCEL:" + text.substring("🗑 Удалить ".length()).trim();
         }
         return null;
     }
@@ -576,6 +775,33 @@ public class BotService {
 
     private boolean isValidEmail(String email) {
         return email != null && email.matches("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$");
+    }
+
+    private boolean isUrl(String url) {
+        return url != null && url.matches("^https?://\\S+$");
+    }
+
+    private Optional<Instant> parseAdminDateTime(String value) {
+        try {
+            LocalDateTime dateTime = LocalDateTime.parse(value.trim(), ADMIN_DATE_TIME);
+            return Optional.of(dateTime.atZone(ZoneId.of(properties.timeZone())).toInstant());
+        } catch (RuntimeException e) {
+            return Optional.empty();
+        }
+    }
+
+    private String formatAdminDateTime(String instant) {
+        return Instant.parse(instant)
+                .atZone(ZoneId.of(properties.timeZone()))
+                .format(ADMIN_DATE_TIME) + " " + properties.timeZone();
+    }
+
+    private String linkTargetText(LinkTarget target) {
+        return target == LinkTarget.COURSE ? "✨ курс" : "🌀 личная сессия";
+    }
+
+    private String shortId(String id) {
+        return id == null || id.length() <= 8 ? id : id.substring(0, 8);
     }
 
     private String startText() {
@@ -782,6 +1008,14 @@ public class BotService {
         WAITING_NAME,
         WAITING_PHONE,
         WAITING_EMAIL
+    }
+
+    private enum AdminLinkStep {
+        WAITING_URL,
+        WAITING_DATE_TIME
+    }
+
+    private record AdminLinkDraft(LinkTarget target, AdminLinkStep step, String url) {
     }
 
     private record UserState(Step step, Tariff tariff, String name, String phone, String email) {

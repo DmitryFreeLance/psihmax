@@ -6,7 +6,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.springframework.stereotype.Component;
@@ -42,6 +44,21 @@ public class OrderStore {
         orders.put(paymentId, paid);
         flush();
         return Optional.of(paid);
+    }
+
+    public synchronized List<PaymentOrder> paidOrders() {
+        return orders.values().stream()
+                .filter(order -> "PAID".equals(order.status()))
+                .sorted(Comparator.comparing(PaymentOrder::paidAt, Comparator.nullsLast(String::compareTo)))
+                .toList();
+    }
+
+    public synchronized long paidCount(long userId, String tariffCode) {
+        return orders.values().stream()
+                .filter(order -> "PAID".equals(order.status()))
+                .filter(order -> order.userId() == userId)
+                .filter(order -> tariffCode.equals(order.tariffCode()))
+                .count();
     }
 
     private Map<String, PaymentOrder> load() {
