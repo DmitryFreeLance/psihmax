@@ -69,25 +69,27 @@ public class BotService {
 
                 Спасибо, %s. Вы оплатили: *%s*.
 
-                Администратор получил уведомление и свяжется с вами, если нужно согласовать детали.
+                Я свяжусь с вами, если нужно согласовать детали.
                 """.formatted(order.customerName(), order.tariffTitle()), mainMenu());
 
         for (Long adminId : adminStore.adminIds()) {
             sendToUser(adminId, """
-                    ✅ Новая оплата
+                    ✅ *Новая оплата*
 
-                    Тариф: *%s*
-                    Сумма: %s руб.
-                    Имя: %s
-                    Телефон: %s
-                    MAX user id: `%d`
-                    Профиль: %s
-                    YooKassa payment id: `%s`
+                    💎 Тариф: *%s*
+                    💰 Сумма: *%s руб.*
+                    👤 Имя: *%s*
+                    📞 Телефон: `%s`
+                    📧 Email для чека: `%s`
+                    🆔 MAX user id: `%d`
+                    👁 Профиль: %s
+                    🧾 YooKassa payment id: `%s`
                     """.formatted(
                             order.tariffTitle(),
                             order.amountValue(),
                             order.customerName(),
                             order.phone(),
+                            blankToDash(order.email()),
                             order.userId(),
                             blankToDash(order.userDisplayName()),
                             order.paymentId()
@@ -124,7 +126,7 @@ public class BotService {
             }
             states.put(incoming.userId(), state.withName(text));
             sendTo(incoming, """
-                    *Шаг 2 из 2*
+                    *Шаг 2 из 3*
 
                     Спасибо, %s. Теперь отправьте *номер телефона* для связи.
 
@@ -134,11 +136,36 @@ public class BotService {
         }
 
         if (state != null && state.step() == Step.WAITING_PHONE) {
-            if (text.length() < 6) {
-                sendTo(incoming, "Похоже, номер слишком короткий. Отправьте телефон ещё раз обычным сообщением.", backToTariffs());
+            Optional<String> normalizedPhone = normalizePhone(text);
+            if (normalizedPhone.isEmpty()) {
+                sendTo(incoming, """
+                        Похоже, номер телефона написан не полностью.
+
+                        Отправьте, пожалуйста, номер обычным сообщением. Например: `+7 999 123-45-67`.
+                        """, backToTariffs());
                 return;
             }
-            createPayment(incoming, state.withPhone(text));
+            states.put(incoming.userId(), state.withPhone(normalizedPhone.get()));
+            sendTo(incoming, """
+                    *Шаг 3 из 3*
+
+                    Теперь отправьте *email для чека*.
+
+                    На него ЮKassa отправит ссылку на зарегистрированный чек.
+                    """, backToTariffs());
+            return;
+        }
+
+        if (state != null && state.step() == Step.WAITING_EMAIL) {
+            if (!isValidEmail(text)) {
+                sendTo(incoming, """
+                        Email выглядит некорректно.
+
+                        Отправьте, пожалуйста, email обычным сообщением. Например: `name@example.com`.
+                        """, backToTariffs());
+                return;
+            }
+            createPayment(incoming, state.withEmail(text));
             return;
         }
 
@@ -222,9 +249,9 @@ public class BotService {
     }
 
     private void startPaymentDialog(Incoming incoming, Tariff tariff) {
-        states.put(incoming.userId(), new UserState(Step.WAITING_NAME, tariff, null, null));
+        states.put(incoming.userId(), new UserState(Step.WAITING_NAME, tariff, null, null, null));
         sendTo(incoming, """
-                *Шаг 1 из 2*
+                *Шаг 1 из 3*
 
                 Вы выбрали: *%s*
                 Стоимость: *%s*
@@ -242,6 +269,7 @@ public class BotService {
                 incoming.userDisplayName(),
                 state.name(),
                 state.phone(),
+                state.email(),
                 state.tariff()
         );
         CreatedPayment payment = yooKassaClient.createPayment(request);
@@ -253,6 +281,7 @@ public class BotService {
                 incoming.userDisplayName(),
                 state.name(),
                 state.phone(),
+                state.email(),
                 state.tariff().code(),
                 state.tariff().title(),
                 state.tariff().amount().setScale(2).toPlainString(),
@@ -269,8 +298,6 @@ public class BotService {
 
                 Тариф: *%s*
                 Сумма: *%s*
-
-                После оплаты я увижу подтверждение от ЮKassa, поблагодарю вас и отправлю уведомление администратору.
                 """.formatted(state.name(), state.tariff().title(), state.tariff().amountText()), rows(
                 List.of(InlineButton.link("💳 Оплатить", payment.confirmationUrl())),
                 List.of(InlineButton.callback("💎 Выбрать другой тариф", "TARIFFS")),
@@ -452,6 +479,24 @@ public class BotService {
         } catch (NumberFormatException e) {
             return 0;
         }
+    }
+
+    private Optional<String> normalizePhone(String phone) {
+        String digits = phone == null ? "" : phone.replaceAll("\\D", "");
+        if (digits.length() == 11 && digits.startsWith("8")) {
+            return Optional.of("7" + digits.substring(1));
+        }
+        if (digits.length() == 10) {
+            return Optional.of("7" + digits);
+        }
+        if (digits.length() >= 11 && digits.length() <= 15) {
+            return Optional.of(digits);
+        }
+        return Optional.empty();
+    }
+
+    private boolean isValidEmail(String email) {
+        return email != null && email.matches("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$");
     }
 
     private String startText() {
@@ -654,16 +699,21 @@ public class BotService {
 
     private enum Step {
         WAITING_NAME,
-        WAITING_PHONE
+        WAITING_PHONE,
+        WAITING_EMAIL
     }
 
-    private record UserState(Step step, Tariff tariff, String name, String phone) {
+    private record UserState(Step step, Tariff tariff, String name, String phone, String email) {
         UserState withName(String name) {
-            return new UserState(Step.WAITING_PHONE, tariff, name, phone);
+            return new UserState(Step.WAITING_PHONE, tariff, name, phone, email);
         }
 
         UserState withPhone(String phone) {
-            return new UserState(step, tariff, name, phone);
+            return new UserState(Step.WAITING_EMAIL, tariff, name, phone, email);
+        }
+
+        UserState withEmail(String email) {
+            return new UserState(step, tariff, name, phone, email);
         }
     }
 }

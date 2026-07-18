@@ -45,6 +45,23 @@ public class YooKassaClient {
             confirmation.put("type", "redirect");
             confirmation.put("return_url", properties.yookassa().returnUrl());
 
+            ObjectNode receipt = body.putObject("receipt");
+            ObjectNode customer = receipt.putObject("customer");
+            customer.put("full_name", paymentRequest.customerName());
+            customer.put("email", paymentRequest.email());
+            customer.put("phone", normalizePhoneForReceipt(paymentRequest.phone()));
+
+            ObjectNode item = receipt.putArray("items").addObject();
+            item.put("description", trim(paymentRequest.tariff().title(), 128));
+            item.put("quantity", "1.00");
+            ObjectNode itemAmount = item.putObject("amount");
+            itemAmount.put("value", paymentRequest.tariff().amount().setScale(2, RoundingMode.HALF_UP).toPlainString());
+            itemAmount.put("currency", "RUB");
+            item.put("vat_code", 1);
+            item.put("payment_subject", "service");
+            item.put("payment_mode", "full_payment");
+            receipt.put("internet", true);
+
             ObjectNode metadata = body.putObject("metadata");
             metadata.put("max_user_id", paymentRequest.userId());
             if (paymentRequest.chatId() != null) {
@@ -52,6 +69,7 @@ public class YooKassaClient {
             }
             metadata.put("customer_name", paymentRequest.customerName());
             metadata.put("phone", paymentRequest.phone());
+            metadata.put("email", paymentRequest.email());
             metadata.put("tariff_code", paymentRequest.tariff().code());
             metadata.put("tariff_title", paymentRequest.tariff().title());
 
@@ -101,5 +119,23 @@ public class YooKassaClient {
     private String basicAuth() {
         String raw = properties.yookassa().shopId() + ":" + properties.yookassa().secretKey();
         return "Basic " + Base64.getEncoder().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String normalizePhoneForReceipt(String phone) {
+        String digits = phone == null ? "" : phone.replaceAll("\\D", "");
+        if (digits.length() == 11 && digits.startsWith("8")) {
+            return "7" + digits.substring(1);
+        }
+        if (digits.length() == 10) {
+            return "7" + digits;
+        }
+        return digits;
+    }
+
+    private String trim(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength);
     }
 }

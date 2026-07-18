@@ -6,6 +6,7 @@ public record PaymentRequest(
         String userDisplayName,
         String customerName,
         String phone,
+        String email,
         Tariff tariff
 ) {
 }
