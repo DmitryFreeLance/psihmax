@@ -10,6 +10,7 @@ import org.springframework.validation.annotation.Validated;
 public record BotProperties(
         String dataFile,
         String reviewsDir,
+        String videosDir,
         @Valid Max max,
         @Valid YooKassa yookassa,
         @Valid Links links

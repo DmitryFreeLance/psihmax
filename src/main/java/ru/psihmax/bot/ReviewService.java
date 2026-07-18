@@ -18,8 +18,12 @@ import ru.psihmax.bot.store.ReviewCacheEntry;
 
 @Service
 public class ReviewService {
+    private static final int PHOTO_PAGE_SIZE = 9;
     private static final List<String> IMAGE_EXTENSIONS = List.of(
             ".jpg", ".jpeg", ".png", ".gif", ".tiff", ".bmp", ".heic", ".webp"
+    );
+    private static final List<String> VIDEO_EXTENSIONS = List.of(
+            ".mp4", ".mov", ".mkv", ".webm"
     );
 
     private final BotProperties properties;
@@ -38,25 +42,49 @@ public class ReviewService {
         this.cache = loadCache();
     }
 
-    public Optional<ReviewPage> getPage(int requestedPage) {
+    public Optional<PhotoReviewPage> getPhotoPage(int requestedPage) {
         List<Path> images = images();
         if (images.isEmpty()) {
             return Optional.empty();
         }
 
-        int page = Math.max(0, Math.min(requestedPage, images.size() - 1));
-        Path image = images.get(page);
-        return Optional.of(new ReviewPage(page, images.size(), image.getFileName().toString(), tokenFor(image)));
+        int totalPages = (int) Math.ceil(images.size() / (double) PHOTO_PAGE_SIZE);
+        int page = clamp(requestedPage, 0, totalPages - 1);
+        int from = page * PHOTO_PAGE_SIZE;
+        int to = Math.min(from + PHOTO_PAGE_SIZE, images.size());
+        List<String> tokens = images.subList(from, to).stream()
+                .map(image -> tokenFor(image, "image"))
+                .toList();
+        return Optional.of(new PhotoReviewPage(page, totalPages, from + 1, to, images.size(), tokens));
+    }
+
+    public Optional<VideoReviewPage> getVideoPage(int requestedPage) {
+        List<Path> videos = videoReviews();
+        if (videos.isEmpty()) {
+            return Optional.empty();
+        }
+
+        int page = clamp(requestedPage, 0, videos.size() - 1);
+        Path video = videos.get(page);
+        return Optional.of(new VideoReviewPage(page, videos.size(), video.getFileName().toString(), tokenFor(video, "video")));
+    }
+
+    public Optional<String> courseVideoToken() {
+        Path video = Path.of(properties.videosDir()).resolve("kurs.mp4");
+        if (!Files.isRegularFile(video)) {
+            return Optional.empty();
+        }
+        return Optional.of(tokenFor(video, "video"));
     }
 
     public int count() {
         return images().size();
     }
 
-    private synchronized String tokenFor(Path image) {
+    private synchronized String tokenFor(Path media, String mediaType) {
         try {
-            Path normalized = image.toAbsolutePath().normalize();
-            String key = normalized.toString();
+            Path normalized = media.toAbsolutePath().normalize();
+            String key = mediaType + ":" + normalized;
             long size = Files.size(normalized);
             long lastModifiedMillis = Files.getLastModifiedTime(normalized).toMillis();
             ReviewCacheEntry entry = cache.get(key);
@@ -68,12 +96,14 @@ public class ReviewService {
                 return entry.token();
             }
 
-            String token = maxApiClient.uploadImage(normalized);
+            String token = "video".equals(mediaType)
+                    ? maxApiClient.uploadVideo(normalized)
+                    : maxApiClient.uploadImage(normalized);
             cache.put(key, new ReviewCacheEntry(token, size, lastModifiedMillis));
             flushCache();
             return token;
         } catch (IOException e) {
-            throw new IllegalStateException("Cannot prepare review image " + image, e);
+            throw new IllegalStateException("Cannot prepare review media " + media, e);
         }
     }
 
@@ -96,6 +126,28 @@ public class ReviewService {
     private boolean isImage(Path path) {
         String fileName = path.getFileName().toString().toLowerCase(Locale.ROOT);
         return IMAGE_EXTENSIONS.stream().anyMatch(fileName::endsWith);
+    }
+
+    private List<Path> videoReviews() {
+        Path dir = Path.of(properties.videosDir());
+        if (!Files.isDirectory(dir)) {
+            return List.of();
+        }
+        try (var stream = Files.list(dir)) {
+            return stream
+                    .filter(Files::isRegularFile)
+                    .filter(this::isVideo)
+                    .filter(path -> !"kurs.mp4".equalsIgnoreCase(path.getFileName().toString()))
+                    .sorted(Comparator.comparing(path -> path.getFileName().toString(), ReviewService::compareNaturally))
+                    .toList();
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot read videos dir " + dir, e);
+        }
+    }
+
+    private boolean isVideo(Path path) {
+        String fileName = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        return VIDEO_EXTENSIONS.stream().anyMatch(fileName::endsWith);
     }
 
     private Map<String, ReviewCacheEntry> loadCache() {
@@ -159,6 +211,13 @@ public class ReviewService {
         return index;
     }
 
-    public record ReviewPage(int page, int total, String fileName, String token) {
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(value, max));
+    }
+
+    public record PhotoReviewPage(int page, int totalPages, int from, int to, int totalPhotos, List<String> tokens) {
+    }
+
+    public record VideoReviewPage(int page, int total, String fileName, String token) {
     }
 }

@@ -26,6 +26,7 @@ RUN set -eux; \
 
 COPY --from=build /workspace/target/psihmax-bot-*.jar /app/app.jar
 COPY otzivi /app/otzivi
+COPY videos /app/videos
 
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

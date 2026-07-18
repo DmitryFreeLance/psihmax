@@ -187,11 +187,7 @@ public class BotService {
             return;
         }
         if ("COURSE".equals(payload)) {
-            sendTo(incoming, courseText(), rows(
-                    List.of(InlineButton.callback("💳 Выбрать формат", "TARIFFS")),
-                    List.of(InlineButton.callback("⚠️ Правила пространства", "RULES")),
-                    List.of(InlineButton.callback("↩️ Назад", "MAIN"))
-            ));
+            sendCourse(incoming);
             return;
         }
         if ("TARIFFS".equals(payload)) {
@@ -222,11 +218,27 @@ public class BotService {
             return;
         }
         if ("REVIEWS".equals(payload)) {
-            sendReviewPage(incoming, 0);
+            sendReviewsMenu(incoming);
             return;
         }
         if (payload.startsWith("REVIEWS:")) {
-            sendReviewPage(incoming, parsePage(payload.substring("REVIEWS:".length())));
+            sendPhotoReviewPage(incoming, parsePage(payload.substring("REVIEWS:".length())));
+            return;
+        }
+        if ("PHOTO_REVIEWS".equals(payload)) {
+            sendPhotoReviewPage(incoming, 0);
+            return;
+        }
+        if (payload.startsWith("PHOTO_REVIEWS:")) {
+            sendPhotoReviewPage(incoming, parsePage(payload.substring("PHOTO_REVIEWS:".length())));
+            return;
+        }
+        if ("VIDEO_REVIEWS".equals(payload)) {
+            sendVideoReviewPage(incoming, 0);
+            return;
+        }
+        if (payload.startsWith("VIDEO_REVIEWS:")) {
+            sendVideoReviewPage(incoming, parsePage(payload.substring("VIDEO_REVIEWS:".length())));
             return;
         }
         if ("ADMIN_MENU".equals(payload)) {
@@ -314,30 +326,78 @@ public class BotService {
                 List.of(InlineButton.callback("🔥 Полный курс 35 000 ₽", buyPayload(Tariff.FULL))),
                 List.of(InlineButton.callback("💸 Неделя 3 500 ₽", buyPayload(Tariff.WEEKLY))),
                 List.of(InlineButton.callback("🌀 Личная сессия 15 000 ₽", buyPayload(Tariff.SESSION))),
-                List.of(InlineButton.callback("🔁 Повторное обучение 1 000 ₽", buyPayload(Tariff.REPEAT))),
+                List.of(InlineButton.callback("🔁 Повторное обучение 1 000 ₽/нед.", buyPayload(Tariff.REPEAT))),
                 List.of(InlineButton.callback("⚠️ Правила", "RULES"), InlineButton.callback("↩️ Назад", "MAIN"))
         ));
     }
 
-    private void sendReviewPage(Incoming incoming, int page) {
-        reviewService.getPage(page).ifPresentOrElse(review -> {
+    private void sendCourse(Incoming incoming) {
+        List<List<InlineButton>> buttons = rows(
+                List.of(InlineButton.callback("💳 Выбрать формат", "TARIFFS")),
+                List.of(InlineButton.callback("⚠️ Правила пространства", "RULES")),
+                List.of(InlineButton.callback("↩️ Назад", "MAIN"))
+        );
+        reviewService.courseVideoToken().ifPresentOrElse(
+                token -> sendVideoTo(incoming, courseText(), token, buttons),
+                () -> sendTo(incoming, courseText(), buttons)
+        );
+    }
+
+    private void sendReviewsMenu(Incoming incoming) {
+        sendTo(incoming, """
+                💬 *Отзывы*
+
+                Выберите, какие отзывы хотите посмотреть.
+                """, rows(
+                List.of(InlineButton.callback("🖼 Фото отзывы", "PHOTO_REVIEWS")),
+                List.of(InlineButton.callback("🎬 Видео отзывы", "VIDEO_REVIEWS")),
+                List.of(InlineButton.callback("↩️ Назад", "MAIN"))
+        ));
+    }
+
+    private void sendPhotoReviewPage(Incoming incoming, int page) {
+        reviewService.getPhotoPage(page).ifPresentOrElse(review -> {
+            int current = review.page() + 1;
+            int previous = Math.max(0, review.page() - 1);
+            int next = Math.min(review.totalPages() - 1, review.page() + 1);
+
+            List<List<InlineButton>> buttons = rows(
+                    List.of(
+                            InlineButton.callback("🖼⬅️ " + (previous + 1) + "/" + review.totalPages(), "PHOTO_REVIEWS:" + previous),
+                            InlineButton.callback("🖼 " + current + "/" + review.totalPages(), "PHOTO_REVIEWS:" + review.page()),
+                            InlineButton.callback("🖼 " + (next + 1) + "/" + review.totalPages() + " ➡️", "PHOTO_REVIEWS:" + next)
+                    ),
+                    List.of(InlineButton.callback("🎬 Видео отзывы", "VIDEO_REVIEWS"), InlineButton.callback("💳 Тарифы", "TARIFFS")),
+                    List.of(InlineButton.callback("🏠 Меню", "MAIN"))
+            );
+            sendImagesTo(incoming, "🖼 *Фото отзывы*\nФото " + review.from() + "-" + review.to() + " из " + review.totalPhotos(), review.tokens(), buttons);
+        }, () -> sendTo(incoming, """
+                🖼 Фото отзывы пока не найдены.
+
+                Проверьте, что папка `otzivi` существует и в ней есть фото.
+                """, mainMenu()));
+    }
+
+    private void sendVideoReviewPage(Incoming incoming, int page) {
+        reviewService.getVideoPage(page).ifPresentOrElse(review -> {
             int current = review.page() + 1;
             int previous = Math.max(0, review.page() - 1);
             int next = Math.min(review.total() - 1, review.page() + 1);
 
             List<List<InlineButton>> buttons = rows(
                     List.of(
-                            InlineButton.callback("⬅️ " + (previous + 1) + "/" + review.total(), "REVIEWS:" + previous),
-                            InlineButton.callback(current + "/" + review.total(), "REVIEWS:" + review.page()),
-                            InlineButton.callback((next + 1) + "/" + review.total() + " ➡️", "REVIEWS:" + next)
+                            InlineButton.callback("🎬⬅️ " + (previous + 1) + "/" + review.total(), "VIDEO_REVIEWS:" + previous),
+                            InlineButton.callback("🎬 " + current + "/" + review.total(), "VIDEO_REVIEWS:" + review.page()),
+                            InlineButton.callback("🎬 " + (next + 1) + "/" + review.total() + " ➡️", "VIDEO_REVIEWS:" + next)
                     ),
-                    List.of(InlineButton.callback("💳 Тарифы", "TARIFFS"), InlineButton.callback("🏠 Меню", "MAIN"))
+                    List.of(InlineButton.callback("🖼 Фото отзывы", "PHOTO_REVIEWS"), InlineButton.callback("💳 Тарифы", "TARIFFS")),
+                    List.of(InlineButton.callback("🏠 Меню", "MAIN"))
             );
-            sendImageTo(incoming, "💬 *Отзывы*\nФото " + current + " из " + review.total(), review.token(), buttons);
+            sendVideoTo(incoming, "🎬 *Видео отзывы*\nВидео " + current + " из " + review.total(), review.token(), buttons);
         }, () -> sendTo(incoming, """
-                💬 Отзывы пока не найдены.
+                🎬 Видео отзывы пока не найдены.
 
-                Проверьте, что папка `otzivi` существует и в ней есть фото.
+                Проверьте, что в папке `videos` есть файлы `1.mp4`, `2.mp4`, `3.mp4`.
                 """, mainMenu()));
     }
 
@@ -405,6 +465,22 @@ public class BotService {
         }
     }
 
+    private void sendImagesTo(Incoming incoming, String text, List<String> imageTokens, List<List<InlineButton>> buttons) {
+        if (incoming.chatId() != null) {
+            maxApiClient.sendImagesToChat(incoming.chatId(), text, imageTokens, buttons);
+        } else {
+            maxApiClient.sendImagesToUser(incoming.userId(), text, imageTokens, buttons);
+        }
+    }
+
+    private void sendVideoTo(Incoming incoming, String text, String videoToken, List<List<InlineButton>> buttons) {
+        if (incoming.chatId() != null) {
+            maxApiClient.sendVideoToChat(incoming.chatId(), text, videoToken, buttons);
+        } else {
+            maxApiClient.sendVideoToUser(incoming.userId(), text, videoToken, buttons);
+        }
+    }
+
     private void sendToUser(long userId, String text, List<List<InlineButton>> buttons) {
         maxApiClient.sendMessageToUser(userId, text, buttons);
     }
@@ -450,10 +526,12 @@ public class BotService {
             case "⚠️ Правила", "⚠️ Правила пространства" -> "RULES";
             case "📞 Связь", "🔗 Ссылки" -> "CONTACTS";
             case "💬 Отзывы" -> "REVIEWS";
+            case "🖼 Фото отзывы" -> "PHOTO_REVIEWS";
+            case "🎬 Видео отзывы" -> "VIDEO_REVIEWS";
             case "🔥 Полный курс 35 000 ₽" -> buyPayload(Tariff.FULL);
             case "💸 Неделя 3 500 ₽" -> buyPayload(Tariff.WEEKLY);
             case "🌀 Личная сессия 15 000 ₽", "🌀 Записаться на сессию" -> buyPayload(Tariff.SESSION);
-            case "🔁 Повторное обучение 1 000 ₽" -> buyPayload(Tariff.REPEAT);
+            case "🔁 Повторное обучение 1 000 ₽", "🔁 Повторное обучение 1 000 ₽/нед." -> buyPayload(Tariff.REPEAT);
             case "🛠 Назад к админам" -> "ADMIN_MENU";
             default -> payloadFromDynamicButtonText(text.trim());
         };
@@ -462,7 +540,8 @@ public class BotService {
     private String payloadFromDynamicButtonText(String text) {
         if (text.matches(".*\\d+/\\d+.*")) {
             String pageText = text.replaceAll("^.*?(\\d+)/(\\d+).*$", "$1");
-            return "REVIEWS:" + Math.max(0, parsePage(pageText) - 1);
+            String prefix = text.contains("🎬") ? "VIDEO_REVIEWS:" : "PHOTO_REVIEWS:";
+            return prefix + Math.max(0, parsePage(pageText) - 1);
         }
         if (text.startsWith("👤 ")) {
             java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\((\\d+)\\)").matcher(text);
@@ -518,7 +597,9 @@ public class BotService {
 
                 Я веду через возвращение к себе: к честности, глубине, внутреннему знанию и живому контакту с тем, кто вы есть на самом деле.
 
-                Регрессология, гипноз, Рейки, тетахилинг и аксесс-бары для меня не ярлыки, а *инструменты мягкого и точного погружения*.
+                Я обучена многим инструментам: гипнозу, Рейки, регрессии и другим практикам. Но оказалось, что всё это пустое.
+
+                Самое важное в жизни — *знакомство с собой*. Самое важное в жизни — *знакомство с Истинным Богом*.
                 """;
     }
 
@@ -549,8 +630,8 @@ public class BotService {
                 🌀 *Индивидуальная сессия* — 15 000 ₽
                 Личная работа со мной и глубокий поиск причины повторяющегося сценария.
 
-                🔁 *Повторное обучение* — 1 000 ₽
-                Для тех, кто уже проходил обучение.
+                🔁 *Повторное обучение* — 1 000 ₽ за неделю
+                Для тех, кто уже проходил обучение. Оплата также в пятницу до *21:00*.
                 """;
     }
 

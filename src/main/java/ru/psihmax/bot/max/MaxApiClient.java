@@ -66,17 +66,41 @@ public class MaxApiClient {
     }
 
     public void sendImageToUser(long userId, String text, String imageToken, List<List<InlineButton>> buttons) {
-        sendImage("user_id", userId, text, imageToken, buttons);
+        sendMedia("user_id", userId, text, List.of(mediaAttachment("image", imageToken)), buttons);
     }
 
     public void sendImageToChat(long chatId, String text, String imageToken, List<List<InlineButton>> buttons) {
-        sendImage("chat_id", chatId, text, imageToken, buttons);
+        sendMedia("chat_id", chatId, text, List.of(mediaAttachment("image", imageToken)), buttons);
+    }
+
+    public void sendImagesToUser(long userId, String text, List<String> imageTokens, List<List<InlineButton>> buttons) {
+        sendMedia("user_id", userId, text, mediaAttachments("image", imageTokens), buttons);
+    }
+
+    public void sendImagesToChat(long chatId, String text, List<String> imageTokens, List<List<InlineButton>> buttons) {
+        sendMedia("chat_id", chatId, text, mediaAttachments("image", imageTokens), buttons);
+    }
+
+    public void sendVideoToUser(long userId, String text, String videoToken, List<List<InlineButton>> buttons) {
+        sendMedia("user_id", userId, text, List.of(mediaAttachment("video", videoToken)), buttons);
+    }
+
+    public void sendVideoToChat(long chatId, String text, String videoToken, List<List<InlineButton>> buttons) {
+        sendMedia("chat_id", chatId, text, List.of(mediaAttachment("video", videoToken)), buttons);
     }
 
     public String uploadImage(Path image) {
+        return uploadMedia(image, "image");
+    }
+
+    public String uploadVideo(Path video) {
+        return uploadMedia(video, "video");
+    }
+
+    private String uploadMedia(Path media, String mediaType) {
         try {
             HttpRequest prepareRequest = HttpRequest.newBuilder()
-                    .uri(uri("/uploads?type=image"))
+                    .uri(uri("/uploads?type=" + enc(mediaType)))
                     .timeout(Duration.ofSeconds(30))
                     .header("Authorization", properties.max().token())
                     .POST(HttpRequest.BodyPublishers.noBody())
@@ -89,7 +113,7 @@ public class MaxApiClient {
                 throw new IOException("MAX upload response has no url: " + uploadInfo);
             }
 
-            HttpResponse<String> uploadResponse = uploadFile(uploadUrl, image);
+            HttpResponse<String> uploadResponse = uploadFile(uploadUrl, media);
             JsonNode uploadResult = tryReadJson(uploadResponse.body());
             if (token.isBlank() && uploadResult != null) {
                 token = firstText(
@@ -103,7 +127,7 @@ public class MaxApiClient {
             }
             return token;
         } catch (Exception e) {
-            throw new IllegalStateException("Cannot upload image " + image, e);
+            throw new IllegalStateException("Cannot upload " + mediaType + " " + media, e);
         }
     }
 
@@ -142,13 +166,23 @@ public class MaxApiClient {
         sendMessage(idName, id, text, null, buttons);
     }
 
-    private void sendImage(String idName, long id, String text, String imageToken, List<List<InlineButton>> buttons) {
-        ObjectNode image = objectMapper.createObjectNode();
-        image.put("type", "image");
+    private void sendMedia(String idName, long id, String text, List<ObjectNode> mediaAttachments, List<List<InlineButton>> buttons) {
+        sendMessage(idName, id, text, mediaAttachments, buttons);
+    }
+
+    private List<ObjectNode> mediaAttachments(String type, List<String> tokens) {
+        return tokens.stream()
+                .map(token -> mediaAttachment(type, token))
+                .toList();
+    }
+
+    private ObjectNode mediaAttachment(String type, String token) {
+        ObjectNode attachment = objectMapper.createObjectNode();
+        attachment.put("type", type);
         ObjectNode payload = objectMapper.createObjectNode();
-        payload.put("token", imageToken);
-        image.set("payload", payload);
-        sendMessage(idName, id, text, List.of(image), buttons);
+        payload.put("token", token);
+        attachment.set("payload", payload);
+        return attachment;
     }
 
     private void sendMessage(String idName, long id, String text, List<ObjectNode> extraAttachments, List<List<InlineButton>> buttons) {
